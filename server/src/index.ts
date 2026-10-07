@@ -5,9 +5,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import rateLimit from 'express-rate-limit';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import { generateTravelPlanService, modifyTravelPlanService } from './aiService.js';
-import { validateGeneratePlanRequest, validateModifyPlanRequest } from './validation.js';
+import { validateGeneratePlanRequest, validateModifyPlanRequest, isValidUuid } from './validation.js';
 import { testDbConnection } from './db.js';
+import authRouter from './routes/auth.js';
+import { optionalAuth, requireAuth } from './middleware/auth.js';
+import { saveTravelPlan, getTravelPlansByUserId, getTravelPlanByIdForUser } from './db/travelPlans.js';
+import { runStartupMigrations, checkDbHealth } from './db/init.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,6 +25,9 @@ dotenv.config({ override: false });
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Enable trust proxy for Render reverse proxy HTTPS detection and secure cookies
+app.set('trust proxy', 1);
 
 // Security: Disable Express fingerprinting header
 app.disable('x-powered-by');
@@ -97,9 +105,13 @@ app.use(cors({
     // Disallow cross-origin requests by passing false (standard CORS rejection without throwing 500 Error)
     callback(null, false);
   },
+  credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Cookie parsing middleware for authenticated sessions
+app.use(cookieParser());
 
 // Security: Enforce explicit 100kb body size limit to prevent memory exhaustion attacks
 app.use(express.json({ limit: '100kb' }));
@@ -144,27 +156,23 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-// Database health check endpoint
+// Safe database health check endpoint
 app.get('/api/db-health', async (_req: Request, res: Response) => {
-  const isConnected = await testDbConnection();
-  if (isConnected) {
-    res.json({
-      success: true,
-      status: 'ok',
-      database: 'connected'
-    });
-  } else {
-    res.status(503).json({
-      success: false,
-      status: 'error',
-      database: 'disconnected',
-      error: 'Unable to connect to the database.'
-    });
-  }
+  const health = await checkDbHealth();
+  const statusCode = health.success ? 200 : 503;
+  res.status(statusCode).json({
+    success: health.success,
+    database: health.database,
+    schemaReady: health.schemaReady,
+    requiredColumns: health.requiredColumns
+  });
 });
 
+// Authentication routes (Username/password authentication flow)
+app.use('/api/auth', authRouter);
+
 // Endpoint 1: Generate initial travel plan
-app.post('/api/generate-travel-plan', aiRateLimiter, async (req: Request, res: Response): Promise<void> => {
+app.post('/api/generate-travel-plan', requireAuth, aiRateLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
     const validation = validateGeneratePlanRequest(req.body);
     if (!validation.isValid || !validation.data) {
@@ -176,6 +184,17 @@ app.post('/api/generate-travel-plan', aiRateLimiter, async (req: Request, res: R
     }
 
     const result = await generateTravelPlanService(validation.data);
+
+    // Persist the successfully generated itinerary to PostgreSQL for the authenticated user
+    if (req.user?.userId && result.plan) {
+      try {
+        await saveTravelPlan(req.user.userId, validation.data, result.plan);
+      } catch (dbError: any) {
+        // Robustness: DB unavailability must NOT fail plan generation or leak SQL/credentials
+        console.error('[TravelPlan Save DB Error]:', dbError?.message || dbError);
+      }
+    }
+
     res.json({
       success: true,
       data: result.plan,
@@ -195,7 +214,7 @@ app.post('/api/generate-travel-plan', aiRateLimiter, async (req: Request, res: R
 });
 
 // Endpoint 2: Modify existing travel plan
-app.post('/api/modify-travel-plan', aiRateLimiter, async (req: Request, res: Response): Promise<void> => {
+app.post('/api/modify-travel-plan', requireAuth, aiRateLimiter, async (req: Request, res: Response): Promise<void> => {
   try {
     const validation = validateModifyPlanRequest(req.body);
     if (!validation.isValid || !validation.data) {
@@ -225,6 +244,63 @@ app.post('/api/modify-travel-plan', aiRateLimiter, async (req: Request, res: Res
   }
 });
 
+// Endpoint 3: Retrieve authenticated user's saved travel plans (history list)
+app.get('/api/travel-plans', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ authenticated: false });
+      return;
+    }
+
+    const itineraries = await getTravelPlansByUserId(userId);
+    res.json({
+      itineraries
+    });
+  } catch (error: any) {
+    console.error('[Get Travel Plans Route Error]:', error?.message || error);
+    res.status(500).json({
+      error: 'Unable to load travel history.'
+    });
+  }
+});
+
+// Endpoint 4: Retrieve full travel plan detail by ID for authenticated user
+app.get('/api/travel-plans/:id', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ authenticated: false });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!id || !isValidUuid(id)) {
+      res.status(400).json({
+        error: 'Invalid itinerary ID.'
+      });
+      return;
+    }
+
+    const itinerary = await getTravelPlanByIdForUser(id, userId);
+    if (!itinerary) {
+      res.status(404).json({
+        error: 'Itinerary not found.'
+      });
+      return;
+    }
+
+    res.json({
+      itinerary
+    });
+  } catch (error: any) {
+    console.error('[Get Travel Plan Detail Route Error]:', error?.message || error);
+    res.status(500).json({
+      error: 'Unable to load itinerary.'
+    });
+  }
+});
+
 // Explicit 404 handler for API routes
 app.all('/api/*', (_req: Request, res: Response) => {
   res.status(404).json({
@@ -249,11 +325,32 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`AI Travel Agent server running on http://localhost:${PORT}`);
-  if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'your_gemini_api_key_here') {
-    console.log('Notice: GEMINI_API_KEY is not set in server/.env. Demo fallback mode is enabled.');
+async function startServer(): Promise<void> {
+  // If DATABASE_URL is configured, initialize database schema BEFORE starting HTTP server
+  if (process.env.DATABASE_URL) {
+    console.log('[Startup] DATABASE_URL detected. Initializing database schema and migrations...');
+    const migrationResult = await runStartupMigrations();
+    if (!migrationResult.success) {
+      console.error('[Startup Fatal Error] Database schema initialization failed:', migrationResult.message);
+      console.error('[Startup Fatal Error] HTTP server will NOT start because the database is not ready.');
+      process.exit(1);
+    }
+    console.log('[Startup] Database schema verified successfully.');
   } else {
-    console.log('Gemini API key detected.');
+    console.log('[Notice] DATABASE_URL is not set. Demo/fallback mode is enabled. Database migrations skipped.');
   }
+
+  app.listen(PORT, () => {
+    console.log(`AI Travel Agent server running on http://localhost:${PORT}`);
+    if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'your_gemini_api_key_here') {
+      console.log('Notice: GEMINI_API_KEY is not set in server/.env. Demo fallback mode is enabled.');
+    } else {
+      console.log('Gemini API key detected.');
+    }
+  });
+}
+
+startServer().catch((fatalErr) => {
+  console.error('[Server Fatal Error]:', fatalErr?.message || fatalErr);
+  process.exit(1);
 });

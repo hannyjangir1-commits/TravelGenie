@@ -1,11 +1,24 @@
 import React from 'react';
+import type { UserProfile } from '../types';
+import { ProfileMenu } from './ProfileMenu';
 
 interface HeaderProps {
   onNewPlan?: () => void;
   hasPlan?: boolean;
+  user?: UserProfile | null;
+  onUpdateUser?: (updatedUser: UserProfile) => void;
+  onLogout?: () => void;
+  onOpenAuth?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onNewPlan, hasPlan }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onNewPlan,
+  hasPlan,
+  user,
+  onUpdateUser,
+  onLogout,
+  onOpenAuth
+}) => {
   return (
     <header className="app-header">
       <div className="container header-inner">
@@ -32,6 +45,23 @@ export const Header: React.FC<HeaderProps> = ({ onNewPlan, hasPlan }) => {
             </button>
           )}
 
+          {user && onUpdateUser && onLogout ? (
+            <ProfileMenu
+              user={user}
+              onUpdateUser={onUpdateUser}
+              onLogout={onLogout}
+            />
+          ) : !user && onOpenAuth ? (
+            <button
+              type="button"
+              className="btn-nav-action"
+              onClick={onOpenAuth}
+              title="Sign Up or Log In"
+              aria-label="Sign Up or Log In"
+            >
+              <span>Sign Up / Log In</span>
+            </button>
+          ) : null}
         </div>
       </div>
     </header>

@@ -6,22 +6,27 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/db/migrations', {recursive:true}); if(fs.existsSync('src/db/schema.sql')) fs.copyFileSync('src/db/schema.sql', 'dist/db/schema.sql'); if(fs.existsSync('src/db/migrations')) for(const f of fs.readdirSync('src/db/migrations')) fs.copyFileSync('src/db/migrations/'+f, 'dist/db/migrations/'+f);\"",
     "start": "node dist/index.js",
-    "db:init": "tsx src/db/init.ts"
+    "db:init": "node dist/db/init.js"
   },
   "dependencies": {
     "@types/compression": "^1.8.1",
     "compression": "^1.8.2",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^8.7.0",
+    "google-auth-library": "^11.1.0",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.1"
   },
   "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.23.1",
     "tsx": "^4.19.2",

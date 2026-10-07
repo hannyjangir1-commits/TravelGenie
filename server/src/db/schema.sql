@@ -7,10 +7,13 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- Table: users
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(255) UNIQUE,
+    password_hash TEXT,
     google_id VARCHAR(255) UNIQUE,
     name VARCHAR(255),
     email VARCHAR(255) UNIQUE,
     profile_picture TEXT,
+    place VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

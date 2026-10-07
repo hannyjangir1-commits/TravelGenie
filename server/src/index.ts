@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import compression from 'compression';
 import { generateTravelPlanService, modifyTravelPlanService } from './aiService.js';
 import { validateGeneratePlanRequest, validateModifyPlanRequest } from './validation.js';
+import { testDbConnection } from './db.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,6 +142,25 @@ app.get('/api/health', (_req: Request, res: Response) => {
     status: 'ok',
     service: 'AI Travel Agent API'
   });
+});
+
+// Database health check endpoint
+app.get('/api/db-health', async (_req: Request, res: Response) => {
+  const isConnected = await testDbConnection();
+  if (isConnected) {
+    res.json({
+      success: true,
+      status: 'ok',
+      database: 'connected'
+    });
+  } else {
+    res.status(503).json({
+      success: false,
+      status: 'error',
+      database: 'disconnected',
+      error: 'Unable to connect to the database.'
+    });
+  }
 });
 
 // Endpoint 1: Generate initial travel plan
